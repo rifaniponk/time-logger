@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.Python
+env/
+venv/
+.venv/
+.env
+
+# Generated data/reports
+time_entries.csv
+reports/
