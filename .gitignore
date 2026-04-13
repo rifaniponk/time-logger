@@ -9,4 +9,5 @@ venv/
 
 # Generated data/reports
 time_entries.csv
+billing_rate.txt
 reports/

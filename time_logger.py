@@ -11,12 +11,13 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
-from urllib import error, request
+from urllib import request
 
 
 DATE_FMT = "%Y-%m-%d"
 DEFAULT_DATA_FILE = Path(__file__).with_name("time_entries.csv")
-HOURLY_RATE_USD = 23.0
+DEFAULT_RATE_FILE = Path(__file__).with_name("billing_rate.txt")
+FALLBACK_RATE_USD = 23.0
 
 
 @dataclass
@@ -95,6 +96,24 @@ def parse_hours(value: str | None, *, required: bool = False) -> float:
     raise ValueError("Hours must be provided")
 
 
+def read_rate(path: Path) -> float:
+    if path.exists():
+        try:
+            value = float(path.read_text().strip())
+            if value <= 0:
+                raise ValueError
+            return value
+        except ValueError:
+            print(f"Warning: invalid rate file {path}; using fallback.")
+    return FALLBACK_RATE_USD
+
+
+def write_rate(path: Path, value: float) -> None:
+    if value <= 0:
+        raise ValueError("Rate must be positive")
+    path.write_text(f"{value:.2f}\n", encoding="utf-8")
+
+
 def serialize_hours(hours: float) -> str:
     return f"{hours:.2f}"
 
@@ -167,6 +186,7 @@ def cli_list(args: argparse.Namespace) -> None:
 
 def cli_report(args: argparse.Namespace) -> None:
     data_path: Path = args.data_file
+    rate_path: Path = args.rate_file
     entries = read_entries(data_path)
     if not entries:
         raise SystemExit("No entries available to report on.")
@@ -197,6 +217,7 @@ def cli_report(args: argparse.Namespace) -> None:
     if not sub_entries:
         raise SystemExit("No entries fell inside that time range.")
 
+    hourly_rate = read_rate(rate_path)
     rate_value, rate_timestamp = fetch_usd_to_idr_rate()
     if rate_value is None:
         print("Warning: failed to fetch USD→IDR exchange rate; showing USD only.")
@@ -206,11 +227,28 @@ def cli_report(args: argparse.Namespace) -> None:
         start,
         end,
         title,
+        hourly_rate=hourly_rate,
         usd_to_idr_rate=rate_value,
         rate_timestamp=rate_timestamp,
     )
     output.write_text(html, encoding="utf-8")
     print(f"Report saved to {output}")
+
+
+def cli_rate(args: argparse.Namespace) -> None:
+    rate_path: Path = args.rate_file
+    if args.set is not None:
+        new_rate = float(args.set)
+        write_rate(rate_path, new_rate)
+        print(
+            f"Hourly rate set to {format_currency(new_rate, 'USD')} "
+            f"and saved to {rate_path}"
+        )
+        return
+
+    current = read_rate(rate_path)
+    source = rate_path if rate_path.exists() else "default (fallback)"
+    print(f"Current rate: {format_currency(current, 'USD')} [{source}]")
 
 
 def build_html_report(
@@ -219,6 +257,7 @@ def build_html_report(
     end: date,
     title: str,
     *,
+    hourly_rate: float,
     usd_to_idr_rate: Optional[float],
     rate_timestamp: Optional[str],
 ) -> str:
@@ -240,7 +279,7 @@ def build_html_report(
         )
 
     calendar_html = build_calendar_sections(start, end, day_totals)
-    revenue_usd = total_hours * HOURLY_RATE_USD
+    revenue_usd = total_hours * hourly_rate
     revenue_idr = revenue_usd * usd_to_idr_rate if usd_to_idr_rate else None
     rate_note = (
         f"USD→IDR @ {usd_to_idr_rate:,.2f} (as of {rate_timestamp})"
@@ -459,7 +498,7 @@ def build_html_report(
       <article class="revenue-card">
         <h3>Revenue (USD)</h3>
         <p>{format_currency(revenue_usd, "USD")}</p>
-        <div class="rate-note">Rate: {format_currency(HOURLY_RATE_USD, "USD")} per hour</div>
+        <div class="rate-note">Rate: {format_currency(hourly_rate, "USD")} per hour</div>
       </article>
       <article class="revenue-card alt">
         <h3>Revenue (IDR)</h3>
@@ -613,6 +652,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=DEFAULT_DATA_FILE,
         help="Path to the CSV data store (default: time_entries.csv next to the script)",
     )
+    parser.add_argument(
+        "--rate-file",
+        type=Path,
+        default=DEFAULT_RATE_FILE,
+        help="Path to the hourly rate file (default: billing_rate.txt next to the script)",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     add_parser = subparsers.add_parser("add", help="Add a new time entry")
@@ -651,6 +696,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     custom.add_argument("--output", help="Target HTML path")
     custom.set_defaults(func=cli_report)
+
+    rate_parser = subparsers.add_parser("rate", help="Show or update the hourly USD rate")
+    rate_parser.add_argument("--set", type=float, help="New hourly rate in USD")
+    rate_parser.set_defaults(func=cli_rate)
 
     return parser
 
